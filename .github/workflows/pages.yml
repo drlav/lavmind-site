@@ -1,0 +1,105 @@
+name: Deploy ready lavmind-site to Pages (disabled, manual only)
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: DEPLOY drlav/lavmind-site
+        type: string
+        required: true
+permissions: {}
+concurrency:
+  group: lavmind-site-pages
+  cancel-in-progress: false
+jobs:
+  build:
+    if: >-
+      github.repository == 'drlav/lavmind-site' && github.ref == 'refs/heads/main' &&
+      github.event_name == 'workflow_dispatch' && github.actor == 'drlav' &&
+      github.triggering_actor == 'drlav' && vars.PAGES_SITE_DEPLOY_ENABLED == 'true' &&
+      inputs.confirmation == 'DEPLOY drlav/lavmind-site'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Reject a stale main dispatch or rerun
+        run: |
+          current_head=$(gh api repos/drlav/lavmind-site/git/ref/heads/main --jq .object.sha)
+          test "$current_head" = "$GITHUB_SHA"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Read configured Pages metadata without enabling a site
+        id: pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+        with:
+          enablement: 'false'
+      - name: Check the fixed Pages base and static-only tree
+        run: |
+          test "$PAGES_BASE_URL" = 'https://drlav.github.io/lavmind-site'
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import stat
+          fixed = {
+              'index.html', '404.html', 'robots.txt', 'mind/index.html', 'mind/404.html',
+              'mind/sitemap.xml', 'mind/series/daily_ai/index.html',
+              'mind/series/research_review/index.html',
+          }
+          directory = re.compile(r'mind(?:/series(?:/(?:daily_ai|research_review))?|/LAV-[0-9]{4})?')
+          root = pathlib.Path('site')
+          if root.is_symlink() or not root.is_dir():
+              raise SystemExit('ready_site_required')
+          files = set()
+          for path in root.rglob('*'):
+              name = path.relative_to(root).as_posix()
+              mode = path.lstat().st_mode
+              if stat.S_ISDIR(mode) and directory.fullmatch(name):
+                  continue
+              if not stat.S_ISREG(mode) or not (
+                  name in fixed or re.fullmatch(r'mind/LAV-[0-9]{4}/index\.html', name)
+              ):
+                  raise SystemExit('unexpected_site_path_or_file_type')
+              files.add(name)
+          if not fixed <= files:
+              raise SystemExit('incomplete_ready_site')
+          PY
+        env:
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          name: lavmind-site-${{ github.run_id }}-${{ github.run_attempt }}
+          path: site/
+          retention-days: 7
+  deploy:
+    needs: build
+    if: >-
+      github.repository == 'drlav/lavmind-site' && github.ref == 'refs/heads/main' &&
+      github.event_name == 'workflow_dispatch' && github.actor == 'drlav' &&
+      github.triggering_actor == 'drlav' && vars.PAGES_SITE_DEPLOY_ENABLED == 'true' &&
+      inputs.confirmation == 'DEPLOY drlav/lavmind-site'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Recheck main after any environment approval wait
+        run: |
+          current_head=$(gh api repos/drlav/lavmind-site/git/ref/heads/main --jq .object.sha)
+          test "$current_head" = "$GITHUB_SHA"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Deploy only the artifact from this run and attempt
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+        with:
+          artifact_name: lavmind-site-${{ github.run_id }}-${{ github.run_attempt }}
