@@ -1,3 +1,4 @@
 User-agent: *
 Allow: /
-Sitemap: https://varnazov.com/mind/sitemap.xml
+
+Sitemap: https://varnazov.com/sitemap.xml

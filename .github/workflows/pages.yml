@@ -1,4 +1,4 @@
-name: Deploy ready lavmind-site on varnazov.com (disabled, manual)
+name: Deploy reviewed LAV brand on varnazov.com
 on:
   workflow_dispatch:
     inputs:
@@ -6,6 +6,9 @@ on:
         description: DEPLOY drlav/lavmind-site
         type: string
         required: true
+  # One owner-authorized brand correction only; remove after its verified release.
+  push:
+    branches: [main]
 permissions: {}
 concurrency:
   group: lavmind-site-pages
@@ -14,97 +17,55 @@ jobs:
   build:
     if: >-
       github.repository == 'drlav/lavmind-site' && github.ref == 'refs/heads/main' &&
-      github.event_name == 'workflow_dispatch' && github.actor == 'drlav' &&
-      github.triggering_actor == 'drlav' && vars.PAGES_SITE_DEPLOY_ENABLED == 'true' &&
-      inputs.confirmation == 'DEPLOY drlav/lavmind-site'
+      github.actor == 'drlav' && github.triggering_actor == 'drlav' &&
+      ((github.event_name == 'workflow_dispatch' && vars.PAGES_SITE_DEPLOY_ENABLED == 'true' &&
+        inputs.confirmation == 'DEPLOY drlav/lavmind-site') ||
+       (github.event_name == 'push' && github.event.before == '6004a13e746cdbe66bfac4074d7c2d491b915cfd'))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
       pages: read
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Reject stale main dispatches or reruns
+      - name: Require first attempt, current main and exact approved brand tree
         run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
           current=$(gh api repos/drlav/lavmind-site/git/ref/heads/main --jq .object.sha)
           test "$current" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD:site)" = 5f2a93971449dd52e9c90c40f49495024d40d8ae
+          python3 .github/scripts/verify_site.py
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: Read actual Pages metadata without enabling a site
-        id: pages
-        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
-        with:
-          enablement: 'false'
-      - name: Require actual apex domain and fixed sanitized site tree
+      - name: Confirm exact domain, Actions source and HTTPS without changes
         run: |
-          test "$PAGES_BASE_URL" = "https://varnazov.com"
+          gh api repos/drlav/lavmind-site/pages > "$RUNNER_TEMP/pages.json"
           python3 - <<'PY'
-          import pathlib
-          import re
-          import stat
-          import xml.etree.ElementTree as ET
-
-          root = pathlib.Path('site')
-          fixed = {
-              'index.html', 'CNAME', 'robots.txt', '404.html',
-              'mind/index.html', 'mind/404.html', 'mind/sitemap.xml',
-              'mind/series/daily_ai/index.html',
-              'mind/series/research_review/index.html',
-          }
-          directory = re.compile(r'mind(?:/series(?:/(?:daily_ai|research_review))?|/LAV-[0-9]{4})?')
-          article = re.compile(r'mind/LAV-[0-9]{4}/index\.html')
-          if root.is_symlink() or not root.is_dir():
-              raise SystemExit('ready_site_required')
-          files = set()
-          for path in root.rglob('*'):
-              name = path.relative_to(root).as_posix()
-              mode = path.lstat().st_mode
-              if stat.S_ISDIR(mode) and directory.fullmatch(name):
-                  continue
-              if not stat.S_ISREG(mode) or not (name in fixed or article.fullmatch(name)):
-                  raise SystemExit('unexpected_public_path_or_type')
-              files.add(name)
-          if not fixed <= files or len(files) > 1000:
-              raise SystemExit('incomplete_site')
-          if (root / 'CNAME').read_bytes() != b'varnazov.com\n':
-              raise SystemExit('wrong_domain')
-          home = (root / 'index.html').read_bytes()
-          mind = (root / 'mind/index.html').read_bytes()
-          if home == mind or b'<link rel="canonical" href="https://varnazov.com/">' not in home:
-              raise SystemExit('corporate_home_not_ready')
-          if b'<link rel="canonical" href="https://varnazov.com/mind/">' not in mind:
-              raise SystemExit('mind_archive_not_ready')
-          for name in files:
-              if not name.endswith('.html'):
-                  continue
-              data = (root / name).read_bytes()
-              if b'/lavmind-site/' in data or b'https://drlav.github.io' in data:
-                  raise SystemExit('old_project_path_or_origin')
-          namespace = '{http://www.sitemaps.org/schemas/sitemap/0.9}'
-          sitemap = ET.fromstring((root / 'mind/sitemap.xml').read_bytes())
-          urls = [x.text for x in sitemap.iter(namespace + 'loc')]
-          if sitemap.tag != namespace + 'urlset' or not {
-              'https://varnazov.com/', 'https://varnazov.com/mind/'
-          } <= set(urls):
-              raise SystemExit('corporate_sitemap_not_ready')
+          import json, os
+          from pathlib import Path
+          data = json.loads((Path(os.environ['RUNNER_TEMP']) / 'pages.json').read_text())
+          print(json.dumps({k: data.get(k) for k in ('cname', 'html_url', 'build_type', 'https_enforced', 'protected_domain_state')}))
+          if (data.get('cname') != 'varnazov.com'
+              or data.get('html_url', '').rstrip('/') != 'https://varnazov.com'
+              or data.get('build_type') != 'workflow'
+              or data.get('https_enforced') is not True):
+              raise SystemExit('exact_https_domain_required')
           PY
         env:
-          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
-      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+          GH_TOKEN: ${{ github.token }}
+      - name: Package only manifest files including public security.txt
+        run: python3 .github/scripts/verify_site.py --archive "$RUNNER_TEMP/artifact.tar"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: lavmind-site-${{ github.run_id }}-${{ github.run_attempt }}
-          path: site/
-          retention-days: 7
+          name: lav-brand-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/artifact.tar
+          retention-days: 1
+          if-no-files-found: error
   deploy:
     needs: build
-    if: >-
-      github.repository == 'drlav/lavmind-site' && github.ref == 'refs/heads/main' &&
-      github.event_name == 'workflow_dispatch' && github.actor == 'drlav' &&
-      github.triggering_actor == 'drlav' && vars.PAGES_SITE_DEPLOY_ENABLED == 'true' &&
-      inputs.confirmation == 'DEPLOY drlav/lavmind-site'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -115,14 +76,23 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Recheck main after any environment approval wait
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Recheck current main and Pages domain after environment approval
         run: |
+          test "$GITHUB_RUN_ATTEMPT" = 1
           current=$(gh api repos/drlav/lavmind-site/git/ref/heads/main --jq .object.sha)
           test "$current" = "$GITHUB_SHA"
+          test "$(gh api repos/drlav/lavmind-site/pages --jq .cname)" = varnazov.com
+          python3 .github/scripts/verify_site.py
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: Deploy only this run and attempt artifact
+      - name: Deploy only the exact artifact from this run and attempt
         id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e
         with:
-          artifact_name: lavmind-site-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact_name: lav-brand-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Verify live HTTPS bytes, brand resources, www and custom 404
+        run: python3 .github/scripts/verify_site.py --live

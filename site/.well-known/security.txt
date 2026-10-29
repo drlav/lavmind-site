@@ -1,0 +1,4 @@
+Contact: mailto:hello@varnazov.com
+Expires: 2027-10-01T00:00:00Z
+Preferred-Languages: ru, en
+Canonical: https://varnazov.com/.well-known/security.txt
