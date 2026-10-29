@@ -1,0 +1,56 @@
+name: Verify restored LAV static site
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - name: Verify exact static bytes, original brand and internal links
+        run: python3 .github/scripts/verify_site.py
+      - name: Reject accidental changes to the reviewed restored site
+        run: test "$(git rev-parse HEAD:site)" = 5f2a93971449dd52e9c90c40f49495024d40d8ae
+      - name: Validate workflow syntax
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$RUNNER_TEMP/actionlint.tar.gz"
+          printf '%s  %s\n' \
+            8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 \
+            "$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
+      - name: Render desktop and mobile previews of the exact candidate
+        run: |
+          python3 -m http.server 8765 --bind 127.0.0.1 --directory site > "$RUNNER_TEMP/preview-server.log" 2>&1 &
+          server=$!
+          trap 'kill "$server"' EXIT
+          for n in 1 2 3 4 5; do
+            if curl --fail --silent http://127.0.0.1:8765/ > /dev/null; then break; fi
+            sleep 1
+          done
+          mkdir -p "$RUNNER_TEMP/brand-previews"
+          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars \
+            --no-first-run --no-default-browser-check --virtual-time-budget=4000 \
+            --window-size=1440,1000 --screenshot="$RUNNER_TEMP/brand-previews/desktop.png" \
+            http://127.0.0.1:8765/
+          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars \
+            --no-first-run --no-default-browser-check --virtual-time-budget=4000 \
+            --window-size=390,844 --screenshot="$RUNNER_TEMP/brand-previews/mobile.png" \
+            http://127.0.0.1:8765/
+          google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars \
+            --no-first-run --no-default-browser-check --virtual-time-budget=4000 \
+            --window-size=1440,1000 --screenshot="$RUNNER_TEMP/brand-previews/mind.png" \
+            http://127.0.0.1:8765/mind/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: brand-previews-${{ github.run_id }}
+          path: ${{ runner.temp }}/brand-previews/
+          retention-days: 1
+          if-no-files-found: error
