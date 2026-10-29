@@ -1,0 +1,37 @@
+name: Read Pages failure and validate recovery archive
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+  pages: read
+jobs:
+  check:
+    if: >-
+      github.repository == 'drlav/lavmind-site' &&
+      github.event.pull_request.head.repo.full_name == 'drlav/lavmind-site' &&
+      github.event.pull_request.head.ref == 'fix/pages-archive-layout' && github.actor == 'drlav'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - name: Read terminal status of the previous failed deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/drlav/lavmind-site/pages/deployments/553d0f0cdc0634d731b2cc5b3a9a579efe39695c
+          gh api repos/drlav/lavmind-site/pages --jq '{cname, html_url, https_enforced, status}'
+      - name: Reconcile current public homepage without modifying it
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,urllib.request
+          with urllib.request.urlopen('https://varnazov.com/', timeout=20) as response:
+              digest=hashlib.sha256(response.read()).hexdigest()
+              print(json.dumps({'http':response.status,'sha256':digest,'restored':digest=='1064fb5427bb63b790d13095efa2fa3a5288bcbc1f19ce9c5d1254cb16a13321'}))
+          if digest not in ('033464ace60443a4e1eccaff4cd058d5137d9aa65ed8b6ce0431adff70d5aaf2','1064fb5427bb63b790d13095efa2fa3a5288bcbc1f19ce9c5d1254cb16a13321'):
+              raise SystemExit('unexpected_public_version_manual_review_required')
+          PY
+      - name: Validate archive bytes including all standard directories
+        run: python3 .github/scripts/package_pages.py "$RUNNER_TEMP/artifact.tar"
