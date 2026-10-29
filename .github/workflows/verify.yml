@@ -32,6 +32,7 @@ jobs:
           server=$!
           trap 'kill "$server"' EXIT
           for n in 1 2 3 4 5; do
+            echo "Preview server readiness attempt $n"
             if curl --fail --silent http://127.0.0.1:8765/ > /dev/null; then break; fi
             sleep 1
           done
