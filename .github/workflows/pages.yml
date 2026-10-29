@@ -6,9 +6,6 @@ on:
         description: DEPLOY drlav/lavmind-site
         type: string
         required: true
-  # One owner-authorized brand correction only; remove after its verified release.
-  push:
-    branches: [main]
 permissions: {}
 concurrency:
   group: lavmind-site-pages
@@ -18,9 +15,8 @@ jobs:
     if: >-
       github.repository == 'drlav/lavmind-site' && github.ref == 'refs/heads/main' &&
       github.actor == 'drlav' && github.triggering_actor == 'drlav' &&
-      ((github.event_name == 'workflow_dispatch' && vars.PAGES_SITE_DEPLOY_ENABLED == 'true' &&
-        inputs.confirmation == 'DEPLOY drlav/lavmind-site') ||
-       (github.event_name == 'push' && github.event.before == '553d0f0cdc0634d731b2cc5b3a9a579efe39695c'))
+      github.event_name == 'workflow_dispatch' && vars.PAGES_SITE_DEPLOY_ENABLED == 'true' &&
+      inputs.confirmation == 'DEPLOY drlav/lavmind-site'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
