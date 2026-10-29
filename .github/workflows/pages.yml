@@ -20,7 +20,7 @@ jobs:
       github.actor == 'drlav' && github.triggering_actor == 'drlav' &&
       ((github.event_name == 'workflow_dispatch' && vars.PAGES_SITE_DEPLOY_ENABLED == 'true' &&
         inputs.confirmation == 'DEPLOY drlav/lavmind-site') ||
-       (github.event_name == 'push' && github.event.before == '6004a13e746cdbe66bfac4074d7c2d491b915cfd'))
+       (github.event_name == 'push' && github.event.before == '553d0f0cdc0634d731b2cc5b3a9a579efe39695c'))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -57,7 +57,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Package only manifest files including public security.txt
-        run: python3 .github/scripts/verify_site.py --archive "$RUNNER_TEMP/artifact.tar"
+        run: python3 .github/scripts/package_pages.py "$RUNNER_TEMP/artifact.tar"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: lav-brand-${{ github.run_id }}-${{ github.run_attempt }}
