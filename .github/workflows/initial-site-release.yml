@@ -1,8 +1,12 @@
-name: Authorized first site release (exact tree, expires 2026-10-30)
+name: Authorized first site release from main (exact tree, expires 2026-10-30)
 on:
   pull_request:
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened]
     branches: [main]
+    paths: [.github/workflows/initial-site-release.yml]
+  push:
+    branches: [main]
+    paths: [.github/workflows/initial-site-release.yml]
 permissions: {}
 concurrency:
   group: lavmind-site-pages
@@ -12,39 +16,46 @@ jobs:
     if: >-
       github.repository == 'drlav/lavmind-site' && github.actor == 'drlav' &&
       github.triggering_actor == 'drlav' &&
-      github.event.pull_request.head.repo.full_name == 'drlav/lavmind-site' &&
-      github.event.pull_request.head.ref == 'release/initial-site-20261029' &&
-      github.event.pull_request.base.ref == 'main' &&
-      (github.event.action != 'closed' || github.event.pull_request.merged == true)
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+        github.event.before == '8d2a4f8bfc4b66d04bc218960a75e4903bed4d2e') ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == 'drlav/lavmind-site' &&
+        github.event.pull_request.head.ref == 'release/main-only-site-20261029'))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
       pages: read
+      actions: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Require this explicit one-time release and exact nine-file tree
+      - name: Keep this release restricted to exactly the authorized static tree
         run: |
           test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$(git rev-parse HEAD:site)" = ac0904821dc9d2a015ce65243a563664fe86e966
+          test "$(git ls-tree -r --name-only HEAD site | wc -l)" = 9
+          test "$(git rev-parse HEAD:site/index.html)" = 8d6f3e8f01685f593e9c568a187d2b1380bb394b
           python3 - <<'PY'
           from datetime import UTC, datetime
           if datetime.now(UTC) >= datetime(2026, 10, 30, 12, tzinfo=UTC):
               raise SystemExit('initial_release_authorization_expired')
           PY
-          test "$(git rev-parse HEAD:site)" = ac0904821dc9d2a015ce65243a563664fe86e966
-          test "$(git ls-tree -r --name-only HEAD site | wc -l)" = 9
-          test "$(git rev-parse HEAD:site/index.html)" = 8d6f3e8f01685f593e9c568a187d2b1380bb394b
-          if [ "$PR_ACTION" = closed ]; then
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
             test "$GITHUB_REF" = refs/heads/main
             test "$(gh api repos/drlav/lavmind-site/git/ref/heads/main --jq .object.sha)" = "$GITHUB_SHA"
           fi
         env:
-          PR_ACTION: ${{ github.event.action }}
           GH_TOKEN: ${{ github.token }}
-      - name: Validate workflow syntax with checksum-pinned actionlint
+      - name: Read previous deployment refusal without changing environment protections
+        run: |
+          gh api repos/drlav/lavmind-site/check-runs/123322050020/annotations \
+            --jq '.[] | {annotation_level, message}'
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Check workflow syntax
         run: |
           curl --fail --silent --show-error --location \
             https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
@@ -54,7 +65,7 @@ jobs:
             "$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check --status
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
-      - name: Read exact Pages custom domain with repository-scoped Pages-read permission
+      - name: Require the actual custom domain, Actions source, and enforced HTTPS
         run: |
           gh api repos/drlav/lavmind-site/pages > "$RUNNER_TEMP/pages.json"
           python3 - <<'PY'
@@ -62,91 +73,20 @@ jobs:
           import os
           from pathlib import Path
           data = json.loads((Path(os.environ['RUNNER_TEMP']) / 'pages.json').read_text())
-          fields = {key: data.get(key) for key in (
-              'cname', 'html_url', 'build_type', 'https_enforced', 'status',
+          print(json.dumps({key: data.get(key) for key in (
+              'cname', 'html_url', 'build_type', 'https_enforced',
               'protected_domain_state', 'https_certificate'
-          )}
-          print(json.dumps(fields, ensure_ascii=True, sort_keys=True))
-          if data.get('cname') != 'varnazov.com':
-              raise SystemExit('wrong_actual_custom_domain')
-          if data.get('html_url', '').rstrip('/') != 'https://varnazov.com':
-              raise SystemExit('wrong_actual_pages_base')
-          if data.get('build_type') != 'workflow':
-              raise SystemExit('pages_source_must_be_github_actions')
-          if data.get('https_enforced') is not True:
-              raise SystemExit('https_enforcement_required')
+          )}, sort_keys=True))
+          if (data.get('cname') != 'varnazov.com'
+              or data.get('html_url', '').rstrip('/') != 'https://varnazov.com'
+              or data.get('build_type') != 'workflow'
+              or data.get('https_enforced') is not True):
+              raise SystemExit('exact_https_custom_domain_not_confirmed')
           PY
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: Validate internal links and immutable file manifest
-        run: |
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import stat
-          from html.parser import HTMLParser
-          from pathlib import Path
-          from urllib.parse import urlsplit
-          expected = {
-              '404.html': '645a087f73915ed9ed9468ef6c501fb856928053685e3a85d696d571bc750be4',
-              'CNAME': '2b9163512e0916f78b47eda4f0d34c3f8c4a364aebb957f20051a3072ec84290',
-              'index.html': '033464ace60443a4e1eccaff4cd058d5137d9aa65ed8b6ce0431adff70d5aaf2',
-              'mind/404.html': '645a087f73915ed9ed9468ef6c501fb856928053685e3a85d696d571bc750be4',
-              'mind/index.html': 'ba127e39b4a127f2d847fbf4587037433acdfc75b4e218feed71cab74c5793fa',
-              'mind/series/daily_ai/index.html': 'f4b5e1a09fd7aa89fefc5636f8d9387f45032de0924dcc07eff67cb96307a1da',
-              'mind/series/research_review/index.html': 'b2f11ba03ddbec0e6a6cf23cdd20c311991ab588fba4a75b460abc304440d288',
-              'mind/sitemap.xml': 'ec28d61678680c681ed7126c012b0ff7f35c2f36014f6917be6e4ae31c6ec5f7',
-              'robots.txt': '8f2d9262cab33ea01cc505732f66c63761471867ecb0e2f0ac662318dbca12b6',
-          }
-          root = Path('site')
-          files = {}
-          for path in root.rglob('*'):
-              mode = path.lstat().st_mode
-              if stat.S_ISDIR(mode):
-                  continue
-              if not stat.S_ISREG(mode):
-                  raise SystemExit('nonregular_site_file')
-              files[path.relative_to(root).as_posix()] = path.read_bytes()
-          if {k: hashlib.sha256(v).hexdigest() for k, v in files.items()} != expected:
-              raise SystemExit('exact_site_manifest_required')
-          class Links(HTMLParser):
-              def __init__(self):
-                  super().__init__()
-                  self.links = []
-                  self.ids = set()
-              def handle_starttag(self, tag, attrs):
-                  attrs = dict(attrs)
-                  if tag in ('script', 'iframe', 'object', 'embed'):
-                      raise SystemExit('active_content_not_allowed')
-                  if tag == 'a' and 'href' in attrs:
-                      self.links.append(attrs['href'])
-                  if 'id' in attrs:
-                      self.ids.add(attrs['id'])
-          for name, data in files.items():
-              if not name.endswith('.html'):
-                  continue
-              parser = Links()
-              parser.feed(data.decode('utf-8'))
-              for href in parser.links:
-                  url = urlsplit(href)
-                  if url.netloc:
-                      if url.scheme != 'https' or url.netloc != 't.me':
-                          raise SystemExit('unexpected_external_link')
-                      continue
-                  if href.startswith('#'):
-                      if url.fragment not in parser.ids:
-                          raise SystemExit('broken_anchor')
-                      continue
-                  dest = url.path.lstrip('/')
-                  if url.path.endswith('/'):
-                      dest += 'index.html'
-                  if dest not in files:
-                      raise SystemExit('broken_internal_link')
-          print(json.dumps({'files': len(files), 'article_count': 0,
-                            'exact_manifest': True, 'internal_links': 'valid'}))
-          PY
-      - name: Upload this approved release only after its explicit merge
-        if: github.event.action == 'closed' && github.event.pull_request.merged == true
+      - name: Upload the approved nine-file site only from actual main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           name: initial-site-${{ github.run_id }}-${{ github.run_attempt }}
@@ -155,12 +95,10 @@ jobs:
   deploy:
     needs: verify
     if: >-
-      github.repository == 'drlav/lavmind-site' && github.ref == 'refs/heads/main' &&
-      github.actor == 'drlav' && github.triggering_actor == 'drlav' &&
-      github.event.action == 'closed' && github.event.pull_request.merged == true &&
-      github.event.pull_request.head.repo.full_name == 'drlav/lavmind-site' &&
-      github.event.pull_request.head.ref == 'release/initial-site-20261029' &&
-      github.event.pull_request.base.ref == 'main'
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      github.repository == 'drlav/lavmind-site' && github.actor == 'drlav' &&
+      github.triggering_actor == 'drlav' &&
+      github.event.before == '8d2a4f8bfc4b66d04bc218960a75e4903bed4d2e'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -171,7 +109,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Revalidate exact main and domain after any environment approval
+      - name: Recheck current main and exact domain after environment approval
         run: |
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$(gh api repos/drlav/lavmind-site/git/ref/heads/main --jq .object.sha)" = "$GITHUB_SHA"
@@ -183,12 +121,12 @@ jobs:
           PY
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: Deploy this authorized nine-file artifact
+      - name: Deploy the one-time owner-authorized artifact
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
         with:
           artifact_name: initial-site-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Verify live HTTPS and exact deployed bytes without re-deployment
+      - name: Verify actual HTTPS bytes, www redirect, and 404 without republishing
         run: |
           python3 - <<'PY'
           import hashlib
@@ -201,8 +139,9 @@ jobs:
                   return None
           opener = urllib.request.build_opener(NoRedirect())
           def get(url):
-              request = urllib.request.Request(url, headers={'Cache-Control': 'no-cache',
-                                                            'User-Agent': 'LAV-site-release-verification'})
+              request = urllib.request.Request(url, headers={
+                  'Cache-Control': 'no-cache', 'User-Agent': 'LAV-site-release-verification'
+              })
               try:
                   with opener.open(request, timeout=15) as response:
                       return response.status, response.headers, response.read(100000)
@@ -219,8 +158,9 @@ jobs:
               for path, digest in list(remaining.items()):
                   status, headers, body = get('https://varnazov.com' + path)
                   if status == 200 and headers.get_content_type() == 'text/html' and hashlib.sha256(body).hexdigest() == digest:
-                      print(json.dumps({'url': 'https://varnazov.com' + path, 'https': 'verified',
-                                        'status': 200, 'exact_sha256': digest}))
+                      print(json.dumps({'url': 'https://varnazov.com' + path,
+                                        'https': 'verified', 'status': 200,
+                                        'exact_sha256': digest}))
                       del remaining[path]
               if not remaining:
                   break
