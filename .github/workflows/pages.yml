@@ -1,4 +1,4 @@
-name: Deploy ready lavmind-site to Pages (disabled, manual only)
+name: Deploy ready lavmind-site on varnazov.com (disabled, manual)
 on:
   workflow_dispatch:
     inputs:
@@ -27,31 +27,35 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Reject a stale main dispatch or rerun
+      - name: Reject stale main dispatches or reruns
         run: |
-          current_head=$(gh api repos/drlav/lavmind-site/git/ref/heads/main --jq .object.sha)
-          test "$current_head" = "$GITHUB_SHA"
+          current=$(gh api repos/drlav/lavmind-site/git/ref/heads/main --jq .object.sha)
+          test "$current" = "$GITHUB_SHA"
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: Read configured Pages metadata without enabling a site
+      - name: Read actual Pages metadata without enabling a site
         id: pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
         with:
           enablement: 'false'
-      - name: Check the fixed Pages base and static-only tree
+      - name: Require actual apex domain and fixed sanitized site tree
         run: |
-          test "$PAGES_BASE_URL" = 'https://drlav.github.io/lavmind-site'
+          test "$PAGES_BASE_URL" = "https://varnazov.com"
           python3 - <<'PY'
           import pathlib
           import re
           import stat
+          import xml.etree.ElementTree as ET
+
+          root = pathlib.Path('site')
           fixed = {
-              'index.html', '404.html', 'robots.txt', 'mind/index.html', 'mind/404.html',
-              'mind/sitemap.xml', 'mind/series/daily_ai/index.html',
+              'index.html', 'CNAME', 'robots.txt', '404.html',
+              'mind/index.html', 'mind/404.html', 'mind/sitemap.xml',
+              'mind/series/daily_ai/index.html',
               'mind/series/research_review/index.html',
           }
           directory = re.compile(r'mind(?:/series(?:/(?:daily_ai|research_review))?|/LAV-[0-9]{4})?')
-          root = pathlib.Path('site')
+          article = re.compile(r'mind/LAV-[0-9]{4}/index\.html')
           if root.is_symlink() or not root.is_dir():
               raise SystemExit('ready_site_required')
           files = set()
@@ -60,13 +64,32 @@ jobs:
               mode = path.lstat().st_mode
               if stat.S_ISDIR(mode) and directory.fullmatch(name):
                   continue
-              if not stat.S_ISREG(mode) or not (
-                  name in fixed or re.fullmatch(r'mind/LAV-[0-9]{4}/index\.html', name)
-              ):
-                  raise SystemExit('unexpected_site_path_or_file_type')
+              if not stat.S_ISREG(mode) or not (name in fixed or article.fullmatch(name)):
+                  raise SystemExit('unexpected_public_path_or_type')
               files.add(name)
-          if not fixed <= files:
-              raise SystemExit('incomplete_ready_site')
+          if not fixed <= files or len(files) > 1000:
+              raise SystemExit('incomplete_site')
+          if (root / 'CNAME').read_bytes() != b'varnazov.com\n':
+              raise SystemExit('wrong_domain')
+          home = (root / 'index.html').read_bytes()
+          mind = (root / 'mind/index.html').read_bytes()
+          if home == mind or b'<link rel="canonical" href="https://varnazov.com/">' not in home:
+              raise SystemExit('corporate_home_not_ready')
+          if b'<link rel="canonical" href="https://varnazov.com/mind/">' not in mind:
+              raise SystemExit('mind_archive_not_ready')
+          for name in files:
+              if not name.endswith('.html'):
+                  continue
+              data = (root / name).read_bytes()
+              if b'/lavmind-site/' in data or b'https://drlav.github.io' in data:
+                  raise SystemExit('old_project_path_or_origin')
+          namespace = '{http://www.sitemaps.org/schemas/sitemap/0.9}'
+          sitemap = ET.fromstring((root / 'mind/sitemap.xml').read_bytes())
+          urls = [x.text for x in sitemap.iter(namespace + 'loc')]
+          if sitemap.tag != namespace + 'urlset' or not {
+              'https://varnazov.com/', 'https://varnazov.com/mind/'
+          } <= set(urls):
+              raise SystemExit('corporate_sitemap_not_ready')
           PY
         env:
           PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
@@ -94,11 +117,11 @@ jobs:
     steps:
       - name: Recheck main after any environment approval wait
         run: |
-          current_head=$(gh api repos/drlav/lavmind-site/git/ref/heads/main --jq .object.sha)
-          test "$current_head" = "$GITHUB_SHA"
+          current=$(gh api repos/drlav/lavmind-site/git/ref/heads/main --jq .object.sha)
+          test "$current" = "$GITHUB_SHA"
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: Deploy only the artifact from this run and attempt
+      - name: Deploy only this run and attempt artifact
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
         with:
